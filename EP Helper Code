@@ -1,0 +1,192 @@
+// ==UserScript==
+// @name         EP Helper
+// @namespace    http://tampermonkey.net/
+// @version      3.0
+// @description  EP Answer Helper + Anti-Snitch - University Research Demo
+// @match        https://app.educationperfect.com/*
+// @grant        none
+// @run-at       document-start
+// ==/UserScript==
+
+(function () {
+  "use strict";
+
+  // ── EXAM BYPASS (always on, silent) ───────────────────────────
+  document.addEventListener('contextmenu', e => e.stopImmediatePropagation(), true);
+  document.addEventListener('selectstart', e => e.stopImmediatePropagation(), true);
+  document.addEventListener('copy', e => e.stopImmediatePropagation(), true);
+
+  // ── ANTI-SNITCH ───────────────────────────────────────────────
+  let antiSnitchActive = true;
+
+  function stopSnitch(e) {
+    if (antiSnitchActive) e.stopImmediatePropagation();
+  }
+
+  function enableAntiSnitch() {
+    try {
+      Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+      Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+    } catch(e) {}
+    document.addEventListener('visibilitychange', stopSnitch, true);
+    window.addEventListener('blur', stopSnitch, true);
+    window.addEventListener('focus', stopSnitch, true);
+    antiSnitchActive = true;
+  }
+
+  function disableAntiSnitch() {
+    document.removeEventListener('visibilitychange', stopSnitch, true);
+    window.removeEventListener('blur', stopSnitch, true);
+    window.removeEventListener('focus', stopSnitch, true);
+    antiSnitchActive = false;
+  }
+
+  setInterval(() => {
+    if (!antiSnitchActive) return;
+    document.dispatchEvent(new MouseEvent('mousemove', {
+      bubbles: true,
+      clientX: 200 + Math.random() * 400,
+      clientY: 200 + Math.random() * 300,
+    }));
+  }, 3000);
+
+  enableAntiSnitch();
+
+  // ── ANSWER READER ─────────────────────────────────────────────
+  function getAnswer() {
+    try {
+      const input = [...document.querySelectorAll('#answer-text')].find(el => el.tagName === 'INPUT');
+      if (!input) return null;
+      const scope = angular.element(input).scope();
+      const q = scope?.self?.model?._currentQuestion;
+      if (!q) return null;
+      return {
+        answer: q.validAnswers?.[0]?.outputString || null,
+        prompt: q.specifiedDisplayName || null,
+      };
+    } catch(e) {
+      return null;
+    }
+  }
+
+  // ── BUILD UI ──────────────────────────────────────────────────
+  function buildUI() {
+    document.getElementById('ep-helper-panel')?.remove();
+    document.getElementById('ep-helper-reopen')?.remove();
+
+    // ── REOPEN BUTTON (always visible when panel is closed) ────
+    const reopenBtn = document.createElement('div');
+    reopenBtn.id = 'ep-helper-reopen';
+    reopenBtn.title = 'Open EP Helper';
+    reopenBtn.style.cssText = `
+      position: fixed; top: 16px; right: 16px; z-index: 999999;
+      width: 32px; height: 32px; border-radius: 50%;
+      background: #58a6ff; color: #0f1117;
+      font-size: 20px; font-weight: 700;
+      display: none; align-items: center; justify-content: center;
+      cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      line-height: 1;
+    `;
+    reopenBtn.textContent = '⚡';
+    document.body.appendChild(reopenBtn);
+
+    // ── MAIN PANEL ─────────────────────────────────────────────
+    const panel = document.createElement('div');
+    panel.id = 'ep-helper-panel';
+    panel.style.cssText = `
+      position: fixed; top: 16px; right: 16px; z-index: 999999;
+      background: #0f1117; color: #e2e8f0;
+      border: 1px solid #30363d; border-radius: 12px;
+      padding: 16px 20px; font-family: 'Fira Code', monospace;
+      font-size: 13px; min-width: 240px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+    `;
+
+    panel.innerHTML = `
+      <!-- HEADER -->
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <span style="font-size:14px;font-weight:700;color:#58a6ff;">⚡ EP Helper</span>
+        <button id="ep-helper-close" style="
+          background:none;border:none;color:#8b949e;
+          cursor:pointer;font-size:18px;padding:0;line-height:1;">×</button>
+      </div>
+
+      <!-- ANSWER -->
+      <div style="margin-bottom:14px;">
+        <div style="font-size:10px;color:#8b949e;text-transform:uppercase;
+          letter-spacing:0.08em;margin-bottom:4px;">Answer</div>
+        <div id="ep-helper-prompt" style="font-size:11px;color:#484f58;margin-bottom:4px;">—</div>
+        <div id="ep-helper-answer" style="
+          font-size:22px;font-weight:700;color:#3fb950;
+          min-height:28px;letter-spacing:0.02em;">—</div>
+      </div>
+
+      <div style="height:1px;background:#21262d;margin-bottom:14px;"></div>
+
+      <!-- ANTI-SNITCH TOGGLE -->
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div style="font-size:12px;font-weight:600;color:#e2e8f0;">Anti-Snitch</div>
+          <div style="font-size:10px;color:#8b949e;">Hides tab switching from EP</div>
+        </div>
+        <div id="ep-snitch-toggle" style="
+          width:40px;height:22px;border-radius:11px;
+          background:#238636;cursor:pointer;position:relative;
+          transition:background 0.2s;">
+          <div id="ep-snitch-knob" style="
+            position:absolute;top:3px;left:21px;
+            width:16px;height:16px;border-radius:50%;
+            background:#fff;transition:left 0.2s;"></div>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(panel);
+
+    // ── CLOSE → show reopen button ─────────────────────────────
+    document.getElementById('ep-helper-close').addEventListener('click', () => {
+      panel.style.display = 'none';
+      reopenBtn.style.display = 'flex';
+    });
+
+    // ── REOPEN → show panel ────────────────────────────────────
+    reopenBtn.addEventListener('click', () => {
+      panel.style.display = '';
+      reopenBtn.style.display = 'none';
+    });
+
+    // ── ANTI-SNITCH TOGGLE ─────────────────────────────────────
+    let snitchOn = true;
+    document.getElementById('ep-snitch-toggle').addEventListener('click', () => {
+      snitchOn = !snitchOn;
+      document.getElementById('ep-snitch-toggle').style.background = snitchOn ? '#238636' : '#484f58';
+      document.getElementById('ep-snitch-knob').style.left = snitchOn ? '21px' : '3px';
+      snitchOn ? enableAntiSnitch() : disableAntiSnitch();
+    });
+  }
+
+  // ── ANSWER LOOP ───────────────────────────────────────────────
+  function startAnswerLoop() {
+    let lastAnswer = null;
+    setInterval(() => {
+      const data = getAnswer();
+      if (!data?.answer || data.answer === lastAnswer) return;
+      lastAnswer = data.answer;
+      const promptEl = document.getElementById('ep-helper-prompt');
+      const answerEl = document.getElementById('ep-helper-answer');
+      if (promptEl) promptEl.textContent = data.prompt || '—';
+      if (answerEl) answerEl.textContent = data.answer;
+    }, 500);
+  }
+
+  // ── INIT ──────────────────────────────────────────────────────
+  const init = setInterval(() => {
+    const input = [...document.querySelectorAll('#answer-text')].find(el => el.tagName === 'INPUT');
+    if (input && window.angular) {
+      clearInterval(init);
+      buildUI();
+      startAnswerLoop();
+    }
+  }, 500);
+
+})();
