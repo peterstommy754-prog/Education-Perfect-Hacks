@@ -1,28 +1,28 @@
 // ==UserScript==
-// @name         EP Helper
+// @name         EP Hacks
 // @namespace    http://tampermonkey.net/
-// @version      3.0
-// @description  EP Answer Helper + Anti-Snitch - University Research Demo
+// @version      4.7
+// @description  EP Answer Helper + Anti-Snitch + Maths Solver - University Research Demo
 // @match        https://app.educationperfect.com/*
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
-
+ 
 (function () {
   "use strict";
-
-  // ── EXAM BYPASS (always on, silent) ───────────────────────────
+ 
+  // ── EXAM BYPASS (silent, always on) ───────────────────────────
   document.addEventListener('contextmenu', e => e.stopImmediatePropagation(), true);
   document.addEventListener('selectstart', e => e.stopImmediatePropagation(), true);
   document.addEventListener('copy', e => e.stopImmediatePropagation(), true);
-
+ 
   // ── ANTI-SNITCH ───────────────────────────────────────────────
   let antiSnitchActive = true;
-
+ 
   function stopSnitch(e) {
     if (antiSnitchActive) e.stopImmediatePropagation();
   }
-
+ 
   function enableAntiSnitch() {
     try {
       Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
@@ -33,14 +33,14 @@
     window.addEventListener('focus', stopSnitch, true);
     antiSnitchActive = true;
   }
-
+ 
   function disableAntiSnitch() {
     document.removeEventListener('visibilitychange', stopSnitch, true);
     window.removeEventListener('blur', stopSnitch, true);
     window.removeEventListener('focus', stopSnitch, true);
     antiSnitchActive = false;
   }
-
+ 
   setInterval(() => {
     if (!antiSnitchActive) return;
     document.dispatchEvent(new MouseEvent('mousemove', {
@@ -49,48 +49,245 @@
       clientY: 200 + Math.random() * 300,
     }));
   }, 3000);
-
+ 
   enableAntiSnitch();
-
+ 
   // ── ANSWER READER ─────────────────────────────────────────────
-  function getAnswer() {
+  function getInput() {
+    return [...document.querySelectorAll('#answer-text')].find(el => el.tagName === 'INPUT');
+  }
+ 
+  function getScope() {
+    const input = getInput();
+    if (!input || !window.angular) return null;
+    return angular.element(input).scope();
+  }
+ 
+  // Standard answer (language questions)
+  function getStandardAnswer() {
     try {
-      const input = [...document.querySelectorAll('#answer-text')].find(el => el.tagName === 'INPUT');
-      if (!input) return null;
-      const scope = angular.element(input).scope();
+      const lpEl = document.querySelector('.lp-answer-input');
+      const scope = lpEl && window.angular ? angular.element(lpEl).scope() : getScope();
       const q = scope?.self?.model?._currentQuestion;
       if (!q) return null;
-      return {
-        answer: q.validAnswers?.[0]?.outputString || null,
-        prompt: q.specifiedDisplayName || null,
-      };
-    } catch(e) {
-      return null;
-    }
+      const answer = q.validAnswers?.[0]?.outputString;
+      const prompt = q.specifiedDisplayName || null;
+      if (!answer) return null;
+      return { answer, prompt, type: 'standard' };
+    } catch(e) { return null; }
   }
-
+ 
+  // Maths answer (questionType 6 with generated variables)
+  function getMathsAnswer() {
+    try {
+      // Use .lp-answer-input scope which works for all question formats
+      const lpEl = document.querySelector('.lp-answer-input');
+      if (!lpEl || !window.angular) return null;
+      const scope = angular.element(lpEl).scope();
+      const q = scope?.self?.model?._currentQuestion;
+      if (!q || q.questionType !== 6) return null;
+      const vars = q.questionGeneratedVariables;
+      if (!vars || vars.length === 0) return null;
+ 
+      const rng = vars.find(v => v.Name === 'rng')?.value || 0;
+ 
+      function parseArr(expr) {
+        const match = expr.match(/\[([^\]]+)\]/);
+        if (!match) return null;
+        return match[1].split(',').map(s => s.replace(/['"]/g, '').trim());
+      }
+ 
+      // Resolve all variables — handle both direct values and array expressions
+      const resolved = { rng };
+      vars.forEach(v => {
+        if (v.Name === 'rng') return;
+        if (v.value !== null && v.value !== undefined && !v.expression) {
+          resolved[v.Name] = v.value;
+        } else if (v.expression && v.expression.includes('[rng]')) {
+          const arr = parseArr(v.expression);
+          if (arr) resolved[v.Name] = parseFloat(arr[rng]);
+        }
+      });
+ 
+      // Get answer expression — EP uses 'answer' or 'ans'
+      const answerVar = vars.find(v => v.Name === 'answer' || v.Name === 'ans');
+      if (!answerVar?.expression) return null;
+ 
+      // Convert EP expression to JS
+      let expr = answerVar.expression
+        .replace(/^fix\((.+),(\d+)\)$/, 'parseFloat(($1).toFixed($2))')
+        .replace(/\bpi\b/g, 'Math.PI')
+        .replace(/\bcos\b/g, 'Math.cos')
+        .replace(/\bsin\b/g, 'Math.sin')
+        .replace(/\btan\b/g, 'Math.tan')
+        .replace(/\bsqrt\b/g, 'Math.sqrt')
+        .replace(/\babs\b/g, 'Math.abs')
+        .replace(/\bround\b/g, 'Math.round');
+ 
+      // Substitute resolved values
+      Object.keys(resolved).forEach(k => {
+        expr = expr.replaceAll(k, String(resolved[k]));
+      });
+ 
+      const answer = eval(expr);
+      if (isNaN(answer)) return null;
+ 
+      return {
+        answer: String(answer),
+        prompt: `🧮 ${answerVar.expression}`,
+        type: 'maths',
+      };
+    } catch(e) { return null; }
+  }
+ 
+  // MCQ answer (questionType 6 with Components)
+  function getMCQAnswer() {
+    try {
+      const lpEl = document.querySelector('.lp-answer-input');
+      if (!lpEl || !window.angular) return null;
+      const scope = angular.element(lpEl).scope();
+      const q = scope?.self?.model?._currentQuestion;
+      if (!q || q.questionType !== 6) return null;
+      const components = q.questionDef?.Components;
+      if (!components?.length) return null;
+ 
+      const vars = q.questionGeneratedVariables;
+      const rng = vars?.find(v => v.Name === 'rng')?.value || 0;
+ 
+      function parseArr(expr) {
+        const match = expr.match(/\[([^\]]+)\]/);
+        if (!match) return null;
+        return match[1].split(',').map(s => s.replace(/['"]/g, '').trim());
+      }
+ 
+      // Resolve variables
+      const resolved = { rng };
+      vars?.forEach(v => {
+        if (v.Name === 'rng') return;
+        if (v.value !== null && v.value !== undefined && !v.expression) {
+          resolved[v.Name] = String(v.value);
+        } else if (v.expression && v.expression.includes('[rng]')) {
+          const arr = parseArr(v.expression);
+          if (arr) resolved[v.Name] = arr[rng];
+        }
+      });
+ 
+      // Find correct option
+      const correct = components[0].Options.find(o => o.Correct === 'true');
+      if (!correct) return null;
+ 
+      const tmpl = correct.TextTemplate;
+      const fn = tmpl.includes('sin') ? 'sin' : tmpl.includes('cos') ? 'cos' : tmpl.includes('tan') ? 'tan' : null;
+      const fracMatch = tmpl.match(/\{(\w+)\}\/\{(\w+)\}/);
+      const numKey = fracMatch?.[1];
+      const denKey = fracMatch?.[2];
+      const numVal = resolved[numKey];
+      const denVal = resolved[denKey];
+ 
+      // Clean template text for direct matching (strip backticks, quotes, latex)
+      const cleanTmpl = tmpl.replace(/`/g, '').replace(/['"]/g, '').replace(/\{[^}]+\}/g, '').toLowerCase().replace(/\s/g, '');
+ 
+      // Highlight correct button with green border
+      const buttons = document.querySelectorAll('.mcq-preview-option');
+      buttons.forEach(btn => { btn.style.outline = ''; btn.style.borderRadius = ''; });
+ 
+      buttons.forEach((btn, i) => {
+        const text = btn.textContent.toLowerCase().replace(/\s/g, '');
+        let matched = false;
+ 
+        // Trig fraction matching (e.g. sin⁻¹(opp/hyp))
+        if (fn && numVal && denVal) {
+          const hasRightFn = text.includes(fn);
+          const hasRightOrder = text.indexOf(numVal) !== -1 && text.indexOf(numVal) < text.indexOf(denVal);
+          if (hasRightFn && hasRightOrder) matched = true;
+        }
+ 
+        // Direct text matching — find which button best matches the template
+        // Done outside the loop below, so skip here
+ 
+ 
+        if (matched) {
+          btn.style.outline = '3px solid #3fb950';
+          btn.style.borderRadius = '6px';
+        }
+      });
+ 
+      // Best-match fallback — find the button whose clean text is shortest
+      // while still containing the resolved template (handles LaTeX buttons)
+      const allBtns = [...buttons];
+      const alreadyHighlighted = allBtns.some(b => b.style.outline);
+      if (!alreadyHighlighted && cleanTmpl.length > 2) {
+        let resolvedTmpl = tmpl.replace(/`/g, '').replace(/['"]/g, '').toLowerCase();
+        Object.keys(resolved).forEach(k => {
+          resolvedTmpl = resolvedTmpl.split('{' + k + '}').join(String(resolved[k]));
+        });
+        const cleanResolved = resolvedTmpl.replace(/[^a-z0-9]/g, '');
+        const candidates = allBtns.filter(btn => {
+          const ct = btn.textContent.toLowerCase().replace(/\s/g, '').replace(/[^a-z0-9]/g, '');
+          return ct.includes(cleanResolved);
+        });
+        if (candidates.length > 0) {
+          // Pick shortest (closest match)
+          const best = candidates.reduce((a, b) => a.textContent.length <= b.textContent.length ? a : b);
+          best.style.outline = '3px solid #3fb950';
+          best.style.borderRadius = '6px';
+        }
+      }
+ 
+      // Build display prompt
+      const displayPrompt = fn && numVal && denVal
+        ? `${fn}⁻¹(${numVal}/${denVal})`
+        : tmpl.replace(/`/g, '').replace(/['"]/g, '').trim();
+ 
+      return {
+        answer: 'Select option with green border',
+        prompt: displayPrompt,
+        type: 'mcq',
+      };
+    } catch(e) { return null; }
+  }
+ 
+  function getAnswer() {
+    return getStandardAnswer() || getMCQAnswer() || getMathsAnswer();
+  }
+ 
+  // ── TYPE ANSWER INTO INPUT ────────────────────────────────────
+  async function typeAnswer(text) {
+    const input = getInput();
+    if (!input) return false;
+    input.focus();
+    input.click();
+    for (const char of text) {
+      await new Promise(r => setTimeout(r, 60 + Math.random() * 80));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: char, keyCode: char.charCodeAt(0), bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keypress', { key: char, keyCode: char.charCodeAt(0), bubbles: true }));
+      const start = input.selectionStart || 0;
+      input.value = input.value.slice(0, start) + char + input.value.slice(start);
+      input.selectionStart = input.selectionEnd = start + 1;
+      input.dispatchEvent(new InputEvent('input', { data: char, inputType: 'insertText', bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: char, keyCode: char.charCodeAt(0), bubbles: true }));
+    }
+    return true;
+  }
+ 
   // ── BUILD UI ──────────────────────────────────────────────────
   function buildUI() {
     document.getElementById('ep-helper-panel')?.remove();
     document.getElementById('ep-helper-reopen')?.remove();
-
-    // ── REOPEN BUTTON (always visible when panel is closed) ────
+ 
     const reopenBtn = document.createElement('div');
     reopenBtn.id = 'ep-helper-reopen';
-    reopenBtn.title = 'Open EP Helper';
     reopenBtn.style.cssText = `
       position: fixed; top: 16px; right: 16px; z-index: 999999;
       width: 32px; height: 32px; border-radius: 50%;
       background: #58a6ff; color: #0f1117;
-      font-size: 20px; font-weight: 700;
+      font-size: 18px; font-weight: 700;
       display: none; align-items: center; justify-content: center;
       cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-      line-height: 1;
     `;
     reopenBtn.textContent = '⚡';
     document.body.appendChild(reopenBtn);
-
-    // ── MAIN PANEL ─────────────────────────────────────────────
+ 
     const panel = document.createElement('div');
     panel.id = 'ep-helper-panel';
     panel.style.cssText = `
@@ -101,16 +298,14 @@
       font-size: 13px; min-width: 240px;
       box-shadow: 0 8px 32px rgba(0,0,0,0.6);
     `;
-
     panel.innerHTML = `
-      <!-- HEADER -->
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
         <span style="font-size:14px;font-weight:700;color:#58a6ff;">⚡ EP Helper</span>
         <button id="ep-helper-close" style="
           background:none;border:none;color:#8b949e;
           cursor:pointer;font-size:18px;padding:0;line-height:1;">×</button>
       </div>
-
+ 
       <!-- ANSWER -->
       <div style="margin-bottom:14px;">
         <div style="font-size:10px;color:#8b949e;text-transform:uppercase;
@@ -119,11 +314,12 @@
         <div id="ep-helper-answer" style="
           font-size:22px;font-weight:700;color:#3fb950;
           min-height:28px;letter-spacing:0.02em;">—</div>
+        <div id="ep-helper-type" style="font-size:10px;color:#484f58;margin-top:4px;"></div>
       </div>
-
+ 
       <div style="height:1px;background:#21262d;margin-bottom:14px;"></div>
-
-      <!-- ANTI-SNITCH TOGGLE -->
+ 
+      <!-- ANTI-SNITCH -->
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div>
           <div style="font-size:12px;font-weight:600;color:#e2e8f0;">Anti-Snitch</div>
@@ -140,22 +336,18 @@
         </div>
       </div>
     `;
-
     document.body.appendChild(panel);
-
-    // ── CLOSE → show reopen button ─────────────────────────────
+ 
     document.getElementById('ep-helper-close').addEventListener('click', () => {
       panel.style.display = 'none';
       reopenBtn.style.display = 'flex';
     });
-
-    // ── REOPEN → show panel ────────────────────────────────────
+ 
     reopenBtn.addEventListener('click', () => {
       panel.style.display = '';
       reopenBtn.style.display = 'none';
     });
-
-    // ── ANTI-SNITCH TOGGLE ─────────────────────────────────────
+ 
     let snitchOn = true;
     document.getElementById('ep-snitch-toggle').addEventListener('click', () => {
       snitchOn = !snitchOn;
@@ -164,29 +356,39 @@
       snitchOn ? enableAntiSnitch() : disableAntiSnitch();
     });
   }
-
+ 
   // ── ANSWER LOOP ───────────────────────────────────────────────
   function startAnswerLoop() {
     let lastAnswer = null;
+ 
     setInterval(() => {
       const data = getAnswer();
       if (!data?.answer || data.answer === lastAnswer) return;
       lastAnswer = data.answer;
+ 
       const promptEl = document.getElementById('ep-helper-prompt');
       const answerEl = document.getElementById('ep-helper-answer');
+      const typeEl = document.getElementById('ep-helper-type');
+ 
       if (promptEl) promptEl.textContent = data.prompt || '—';
       if (answerEl) answerEl.textContent = data.answer;
+      if (typeEl) typeEl.textContent =
+        data.type === 'maths' ? '🧮 Maths (auto-solved)' :
+        data.type === 'mcq'   ? '🔵 Multiple Choice' :
+        '📝 Language';
+ 
+ 
     }, 500);
   }
-
+ 
   // ── INIT ──────────────────────────────────────────────────────
   const init = setInterval(() => {
-    const input = [...document.querySelectorAll('#answer-text')].find(el => el.tagName === 'INPUT');
+    const input = getInput();
     if (input && window.angular) {
       clearInterval(init);
       buildUI();
       startAnswerLoop();
     }
   }, 500);
-
+ 
 })();
